@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gig Invoice Generator</title>
+<!--
+  Multi-file build, ready to push to GitHub / GitHub Pages as-is.
+
+  Persistence:
+  - Inside a Claude.ai artifact: uses window.storage automatically, no
+    setup needed.
+  - Everywhere else: uses Firebase Authentication + Firestore, so data
+    survives clearing browser history, switching devices, etc. Requires
+    a one-time Firebase project setup — see README.md and
+    js/firebase-config.js.
+
+  "Email invoice" calls Claude's API with a connected Gmail tool, which
+  only succeeds inside a Claude.ai artifact. Anywhere else, that call
+  fails harmlessly and the button falls back to opening a drafted email
+  in your default mail app instead — see sendInvoiceEmail() in js/app.js.
+-->
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+  <div class="app">
+    <header class="app-header">
+      <h1>Gig Invoice Generator</h1>
+      <p class="app-sub">Fill in the client details and amount, then download a ready-to-send PDF or email it straight over.</p>
+      <p class="storage-badge" id="storageBadge"></p>
+      <button id="signOutBtn" class="icon-btn hidden" type="button">Sign out</button>
+    </header>
+
+    <div class="persona-tabs" role="tablist">
+      <button class="tab-btn active" data-persona="gadd" type="button">George Gadd</button>
+      <button class="tab-btn" data-persona="tvparty" type="button">TV Party Tonight!</button>
+    </div>
+
+    <div class="layout">
+      <section class="panel form-panel">
+        <div class="panel-head">
+          <h2>Invoice details</h2>
+          <div class="panel-head-actions">
+            <button id="historyBtn" class="icon-btn" type="button">📜 History</button>
+            <button id="settingsBtn" class="icon-btn" type="button">⚙ Your details</button>
+          </div>
+        </div>
+
+        <div class="role-toggle" id="roleToggleWrap">
+          <span class="role-label">Working as</span>
+          <div class="role-buttons">
+            <button type="button" class="role-btn active" data-role="music">Singer/Songwriter</button>
+            <button type="button" class="role-btn" data-role="elearning">E-Learning Design</button>
+          </div>
+        </div>
+
+        <label>Invoice date
+          <input type="date" id="f-date">
+        </label>
+
+        <label>Saved clients
+          <div class="saved-client-row">
+            <select id="f-savedClient"><option value="">— Select a saved client —</option></select>
+            <button type="button" id="manageContactsBtn" class="icon-btn">Manage</button>
+          </div>
+        </label>
+
+        <label>Client name
+          <input type="text" id="f-clientName" placeholder="e.g. The Red Lion, Nottingham">
+        </label>
+        <label>Client address
+          <textarea id="f-clientAddress" rows="3" placeholder="Street, town, postcode"></textarea>
+        </label>
+        <label>Client email <span class="opt">(for emailing the invoice)</span>
+          <input type="email" id="f-clientEmail" placeholder="client@example.com">
+        </label>
+        <button type="button" id="saveClientBtn" class="icon-btn save-client-btn">💾 Save this client for next time</button>
+
+        <label>Amount
+          <div class="amount-input">
+            <span class="currency-symbol">£</span>
+            <input type="number" id="f-amount" min="0" step="0.01" placeholder="0.00">
+          </div>
+        </label>
+
+        <div class="deductions">
+          <div class="deductions-title">Additions</div>
+          <div class="ded-row">
+            <label class="ded-check"><input type="checkbox" id="f-travel-on"> Travel</label>
+            <div class="amount-input small"><span class="currency-symbol">£</span><input type="number" id="f-travel-amount" min="0" step="0.01" placeholder="0.00"></div>
+          </div>
+          <div class="ded-row">
+            <label class="ded-check"><input type="checkbox" id="f-addother-on"> <input type="text" id="f-addother-label" class="misc-label-input" value="Other" aria-label="Addition label"></label>
+            <div class="amount-input small"><span class="currency-symbol">£</span><input type="number" id="f-addother-amount" min="0" step="0.01" placeholder="0.00"></div>
+          </div>
+        </div>
+
+        <div class="deductions">
+          <div class="deductions-title">Deductions</div>
+          <div class="ded-row">
+            <label class="ded-check"><input type="checkbox" id="f-agent-on"> Agent fee</label>
+            <div class="ded-mode-value">
+              <select id="f-agent-mode">
+                <option value="percent">%</option>
+                <option value="flat">£</option>
+              </select>
+              <input type="number" id="f-agent-value" min="0" step="0.01" placeholder="10">
+            </div>
+          </div>
+          <div class="ded-row">
+            <label class="ded-check"><input type="checkbox" id="f-carbon-on"> Carbon offset levy</label>
+            <div class="amount-input small"><span class="currency-symbol">£</span><input type="number" id="f-carbon-amount" min="0" step="0.01" placeholder="0.00"></div>
+          </div>
+          <div class="ded-row">
+            <label class="ded-check"><input type="checkbox" id="f-dedother-on"> <input type="text" id="f-dedother-label" class="misc-label-input" value="Other" aria-label="Deduction label"></label>
+            <div class="amount-input small"><span class="currency-symbol">£</span><input type="number" id="f-dedother-amount" min="0" step="0.01" placeholder="0.00"></div>
+          </div>
+        </div>
+
+        <label>Description <span class="opt">(optional)</span>
+          <input type="text" id="f-description">
+        </label>
+        <label>Invoice number
+          <input type="text" id="f-invoiceNumber">
+        </label>
+
+        <div class="actions">
+          <button id="clearBtn" class="btn ghost" type="button">Clear form</button>
+          <button id="downloadBtn" class="btn primary" type="button">Download PDF</button>
+          <button id="emailBtn" class="btn accent2" type="button">Email invoice</button>
+        </div>
+        <p class="hint">"Email invoice" sends the details straight to the client's inbox via your connected Gmail. If that's not available, it opens a drafted email instead so you can attach the PDF and send it yourself.</p>
+        <p id="statusMsg" class="status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel preview-panel">
+        <div class="panel-head"><h2>Preview</h2></div>
+        <div class="preview-scroll">
+          <div id="invoicePreview" class="invoice theme-gadd"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="settingsTitle">Your details</h2>
+        <button id="closeSettingsBtn" class="icon-btn" type="button">Close</button>
+      </div>
+      <p class="modal-note">Saved privately for next time — only you can see this.</p>
+      <div class="modal-body">
+        <label>Display name on invoice
+          <input type="text" id="s-businessName">
+        </label>
+        <div id="fld-tagline">
+          <label>Tagline
+            <input type="text" id="s-tagline">
+          </label>
+        </div>
+        <label>Your address
+          <textarea id="s-address" rows="3"></textarea>
+        </label>
+        <label>Email
+          <input type="email" id="s-email">
+        </label>
+        <label>Phone <span class="opt">(optional)</span>
+          <input type="text" id="s-phone">
+        </label>
+        <label>Currency symbol
+          <input type="text" id="s-currency" maxlength="3">
+        </label>
+        <hr>
+        <label>Account name
+          <input type="text" id="s-accountName">
+        </label>
+        <label>Bank name <span class="opt">(optional)</span>
+          <input type="text" id="s-bankName">
+        </label>
+        <label>Sort code
+          <input type="text" id="s-sortCode" placeholder="00-00-00">
+        </label>
+        <label>Account number
+          <input type="text" id="s-accountNumber">
+        </label>
+        <hr>
+        <label>Payment terms note
+          <textarea id="s-paymentTerms" rows="2"></textarea>
+        </label>
+        <label>Default agent fee % <span class="opt">(prefills when Agent fee is set to %)</span>
+          <input type="number" id="s-agentFeePercent" min="0" max="100" step="0.1">
+        </label>
+        <div id="fld-defaultDescription">
+          <label>Default line description
+            <input type="text" id="s-defaultDescription">
+          </label>
+        </div>
+        <hr>
+        <div id="fld-genericSeq">
+          <label>Invoice number prefix
+            <input type="text" id="s-invoicePrefix" maxlength="8">
+          </label>
+          <label>Next invoice number
+            <input type="number" id="s-nextNumber" min="1" step="1">
+          </label>
+        </div>
+        <div id="fld-gaddSeq">
+          <div class="seq-pair">
+            <div><label>Singer/Songwriter prefix<input type="text" id="s-music-prefix" maxlength="8"></label></div>
+            <div><label>Next number<input type="number" id="s-music-next" min="1" step="1"></label></div>
+          </div>
+          <div class="seq-pair">
+            <div><label>E-Learning Design prefix<input type="text" id="s-elearning-prefix" maxlength="8"></label></div>
+            <div><label>Next number<input type="number" id="s-elearning-next" min="1" step="1"></label></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="saveSettingsBtn" class="btn primary" type="button">Save details</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="contactsModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>Saved clients</h2>
+        <button id="closeContactsBtn" class="icon-btn" type="button">Close</button>
+      </div>
+      <p class="modal-note">Quick reference for people you invoice often — saved privately.</p>
+      <div id="contactsList" class="contacts-list"></div>
+    </div>
+  </div>
+
+  <div id="historyModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>Invoice history</h2>
+        <button id="closeHistoryBtn" class="icon-btn" type="button">Close</button>
+      </div>
+      <p class="modal-note">Every invoice you've downloaded or emailed, grouped by year — saved privately.</p>
+      <div id="historyList" class="contacts-list"></div>
+    </div>
+  </div>
+
+
+  <div id="configNotice" class="auth-screen hidden">
+    <div class="auth-card">
+      <h2>Almost there</h2>
+      <p>This copy needs a Firebase project connected before it can save anything. Open <code>js/firebase-config.js</code> and follow the setup steps in <code>README.md</code> — it takes a few minutes and Firebase's free tier is plenty for this.</p>
+    </div>
+  </div>
+
+  <div id="authScreen" class="auth-screen hidden">
+    <div class="auth-card">
+      <h2>Sign in</h2>
+      <p>Sign in to save your invoices, settings and saved clients to your own private database — they'll be there no matter what happens to this browser.</p>
+      <label>Email
+        <input type="email" id="auth-email" autocomplete="username">
+      </label>
+      <label>Password
+        <input type="password" id="auth-password" autocomplete="current-password">
+      </label>
+      <div class="auth-actions">
+        <button id="authSignInBtn" class="btn primary" type="button">Sign in</button>
+        <button id="authSignUpBtn" class="btn ghost" type="button">Create account</button>
+      </div>
+      <button id="authResetBtn" class="link-btn" type="button">Forgot password?</button>
+      <p id="authError" class="status"></p>
+    </div>
+  </div>
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.16.0/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.16.0/firebase-auth-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.16.0/firebase-firestore-compat.min.js"></script>
+<script src="js/firebase-config.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
