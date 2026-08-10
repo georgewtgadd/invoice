@@ -1,13 +1,3 @@
-// Fill this in with your own Firebase project's config, then commit it.
-// These values are NOT secret — Firebase's client config is meant to be
-// public; access is controlled by the rules in firestore.rules instead.
-//
-// Where to find these: Firebase Console -> Project settings (gear icon)
-// -> General tab -> "Your apps" -> click the </> (web) icon -> the
-// firebaseConfig object shown there is what goes below.
-//
-// See README.md for the full step-by-step setup.
-
 // Import the functions you need from the SDKs you need
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
