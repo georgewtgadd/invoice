@@ -4,7 +4,7 @@
   var SHARED_ADDRESS = '20 Sisley Avenue\nNottingham\nNG9 7HT';
 
   var ROLE_TEXT = {
-    music: { tagline: 'Singer-Songwriter', description: 'Live performance fee', signoff: 'Thank you for having me play.' },
+    music: { tagline: 'Singer-Songwriter', description: 'Live performance fee', signoff: 'Thanks for having me!' },
     elearning: { tagline: 'E-Learning Designer', description: 'E-learning design services', signoff: 'Thank you for the opportunity to work together.' }
   };
 
@@ -12,7 +12,7 @@
     gadd: {
       businessName: 'George Gadd',
       address: SHARED_ADDRESS,
-      email: '',
+      email: 'georgewtgadd@gmail.com',
       phone: '',
       currency: '£',
       accountName: '',
@@ -31,7 +31,7 @@
       businessName: 'TV Party Tonight!',
       tagline: 'TV Theme Party Band',
       address: SHARED_ADDRESS,
-      email: '',
+      email: 'georgewtgadd@gmail.com',
       phone: '',
       currency: '£',
       accountName: '',
@@ -588,7 +588,17 @@
       '<div class="i-band">' +
         '<div class="i-bandname">' + escapeHtml(s.businessName || 'TV Party Tonight!') + '</div>' +
         '<div class="i-bandtag">' + escapeHtml(s.tagline || 'TV Theme Party Band') + '</div>' +
-        '<div class="i-stamp">Gig<br>Invoice</div>' +
+        '<svg class="i-tv-badge" viewBox="0 0 120 108" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TV">' +
+          '<line x1="42" y1="20" x2="26" y2="4" stroke="#ef5335" stroke-width="4" stroke-linecap="round"/>' +
+          '<line x1="78" y1="20" x2="94" y2="4" stroke="#ef5335" stroke-width="4" stroke-linecap="round"/>' +
+          '<rect x="8" y="20" width="104" height="76" rx="12" fill="#ef5335"/>' +
+          '<rect x="8" y="20" width="104" height="76" rx="12" fill="none" stroke="#fdfcf9" stroke-width="3"/>' +
+          '<rect x="20" y="32" width="66" height="50" rx="6" fill="#131a2e"/>' +
+          '<circle cx="98" cy="48" r="6" fill="#fdfcf9"/>' +
+          '<circle cx="98" cy="68" r="6" fill="#fdfcf9"/>' +
+          '<text x="53" y="53" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="13" fill="#f6b93b" text-anchor="middle">GIG</text>' +
+          '<text x="53" y="70" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="10" fill="#f6b93b" text-anchor="middle">INVOICE</text>' +
+        '</svg>' +
       '</div>' +
       '<div class="i-ticketrow">' +
         '<div class="i-ticketmeta">' +
@@ -755,6 +765,64 @@
   }
 
   /* ---------- PDF export ---------- */
+  async function generatePdfBlob(){
+    if(!window.jspdf || !window.html2canvas) return null;
+    var node = $('invoicePreview');
+    await waitForImages(node);
+    // letterRendering avoids a known html2canvas issue where tracked-out
+    // (letter-spaced) uppercase text renders compressed/overlapping.
+    var canvas = await window.html2canvas(node, { scale: 2, backgroundColor: '#ffffff', letterRendering: true });
+    var imgData = canvas.toDataURL('image/png');
+    var jsPDF = window.jspdf.jsPDF;
+    var pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+    var pageWidth = 210, pageHeight = 297;
+    var imgWidth = pageWidth;
+    var imgHeight = canvas.height * (imgWidth / canvas.width);
+
+    if(imgHeight <= pageHeight){
+      // Invoice content is shorter than a full A4 page — centre it
+      // vertically instead of pinning it to the top with all the
+      // leftover space dumped at the bottom.
+      var yOffset = (pageHeight - imgHeight) / 2;
+      pdf.addImage(imgData, 'PNG', 0, yOffset, imgWidth, imgHeight);
+    } else {
+      var heightLeft = imgHeight;
+      var position = 0;
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+      while(heightLeft > 0){
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+    }
+
+    var nameSlug = (state.invoice.clientName || 'client').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    var fileName = 'Invoice-' + state.invoice.invoiceNumber + '-' + nameSlug + '.pdf';
+    return { blob: pdf.output('blob'), fileName: fileName };
+  }
+
+  function savePdfBlob(blob, fileName){
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+  }
+
+  async function bumpCounterIfNeeded(){
+    var seq = getActiveSeq();
+    var expected = seq.invoicePrefix + '-' + pad4(seq.nextNumber);
+    if(state.invoice.invoiceNumber === expected){
+      seq.nextNumber += 1;
+      await saveSettings(state.persona, state.settings[state.persona]);
+    }
+  }
+
   async function downloadPdf(){
     var err = validate();
     renderPreview();
@@ -766,43 +834,11 @@
     }
 
     setStatus('Generating PDF…', true);
-    var node = $('invoicePreview');
     try {
-      await waitForImages(node);
-      var canvas = await window.html2canvas(node, { scale: 2, backgroundColor: '#ffffff' });
-      var imgData = canvas.toDataURL('image/png');
-      var jsPDF = window.jspdf.jsPDF;
-      var pdf = new jsPDF({ unit: 'mm', format: 'a4' });
-      var pageWidth = 210, pageHeight = 297;
-      var imgWidth = pageWidth;
-      var imgHeight = canvas.height * (imgWidth / canvas.width);
-
-      if(imgHeight <= pageHeight){
-        pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
-      } else {
-        var heightLeft = imgHeight;
-        var position = 0;
-        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-        heightLeft -= pageHeight;
-        while(heightLeft > 0){
-          position = heightLeft - imgHeight;
-          pdf.addPage();
-          pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-          heightLeft -= pageHeight;
-        }
-      }
-
-      var nameSlug = (state.invoice.clientName || 'client').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-      var fileName = 'Invoice-' + state.invoice.invoiceNumber + '-' + nameSlug + '.pdf';
-      pdf.save(fileName);
-
-      var seq = getActiveSeq();
-      var expected = seq.invoicePrefix + '-' + pad4(seq.nextNumber);
-      if(state.invoice.invoiceNumber === expected){
-        seq.nextNumber += 1;
-        await saveSettings(state.persona, state.settings[state.persona]);
-      }
-
+      var result = await generatePdfBlob();
+      if(!result){ setStatus('Something went wrong generating the PDF.', false); return; }
+      savePdfBlob(result.blob, result.fileName);
+      await bumpCounterIfNeeded();
       logInvoice();
       setStatus('Invoice downloaded.', true);
     } catch(e){
@@ -864,22 +900,7 @@
     document.body.removeChild(link);
   }
 
-  async function sendInvoiceEmail(){
-    var err = validateForEmail();
-    renderPreview();
-    if(err){ setStatus(err, false); return; }
-
-    var to = state.invoice.clientEmail.trim();
-    var content = buildEmailContent();
-
-    var confirmed = window.confirm('Send this invoice to ' + to + '?');
-    if(!confirmed) return;
-
-    var seq = getActiveSeq();
-    var expected = seq.invoicePrefix + '-' + pad4(seq.nextNumber);
-    var willBumpCounter = state.invoice.invoiceNumber === expected;
-
-    setStatus('Sending email…', true);
+  async function tryAutoGmailSend(to, content){
     try {
       var resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -894,32 +915,88 @@
           mcp_servers: [{ type: 'url', url: 'https://gmailmcp.googleapis.com/mcp/v1', name: 'gmail-mcp' }]
         })
       });
-
-      if(!resp.ok){ throw new Error('Request failed with status ' + resp.status); }
+      if(!resp.ok) return false;
       var data = await resp.json();
       var blocks = (data && data.content) || [];
       var usedTool = blocks.some(function(b){ return b.type === 'mcp_tool_use'; });
       var hadError = blocks.some(function(b){ return b.type === 'mcp_tool_result' && b.is_error; });
-
-      if(usedTool && !hadError){
-        setStatus('Email sent to ' + to + '.', true);
-        if(willBumpCounter){
-          seq.nextNumber += 1;
-          await saveSettings(state.persona, state.settings[state.persona]);
-        }
-        logInvoice();
-      } else {
-        console.log('Gmail send response:', data);
-        openDraftedEmail(to, content.subject, content.body);
-        logInvoice();
-        setStatus("Couldn't confirm automatic sending, so a drafted email was opened instead.", false);
-      }
+      return usedTool && !hadError;
     } catch(e){
-      console.error(e);
-      openDraftedEmail(to, content.subject, content.body);
-      logInvoice();
-      setStatus("Couldn't send automatically, so a drafted email was opened instead.", false);
+      console.error('Automatic Gmail send failed', e);
+      return false;
     }
+  }
+
+  // Returns 'sent', 'cancelled', or 'unavailable'.
+  async function tryWebShare(blob, fileName, subject, body){
+    if(!navigator.share || !navigator.canShare) return 'unavailable';
+    try {
+      var file = new File([blob], fileName, { type: 'application/pdf' });
+      if(!navigator.canShare({ files: [file] })) return 'unavailable';
+      await navigator.share({ files: [file], title: subject, text: body });
+      return 'sent';
+    } catch(e){
+      if(e && e.name === 'AbortError') return 'cancelled';
+      console.error('Web Share failed', e);
+      return 'unavailable';
+    }
+  }
+
+  async function sendInvoiceEmail(){
+    var err = validateForEmail();
+    renderPreview();
+    if(err){ setStatus(err, false); return; }
+
+    var to = state.invoice.clientEmail.trim();
+    var content = buildEmailContent();
+
+    var confirmed = window.confirm('Send this invoice to ' + to + '?');
+    if(!confirmed) return;
+
+    setStatus('Sending…', true);
+
+    // Tier 1: fully automatic send via your connected Gmail (Claude.ai only).
+    // Message only — no attachment, see README for why.
+    var autoSent = await tryAutoGmailSend(to, content);
+    if(autoSent){
+      await bumpCounterIfNeeded();
+      logInvoice();
+      setStatus('Email sent to ' + to + '.', true);
+      return;
+    }
+
+    // Tier 2: hand the actual PDF to the OS share sheet, so you can pick
+    // Gmail, Outlook, Mail, or anything else — with the file genuinely
+    // attached. Needs a browser that supports the Web Share API with files
+    // (most Chrome/Edge/Safari; not Firefox).
+    setStatus('Preparing the PDF…', true);
+    var pdfResult = null;
+    try { pdfResult = await generatePdfBlob(); } catch(e){ console.error(e); }
+
+    if(pdfResult){
+      var shareOutcome = await tryWebShare(pdfResult.blob, pdfResult.fileName, content.subject, content.body);
+      if(shareOutcome === 'sent'){
+        await bumpCounterIfNeeded();
+        logInvoice();
+        setStatus('Ready to send — pick where to send it from the share menu.', true);
+        return;
+      }
+      if(shareOutcome === 'cancelled'){
+        setStatus('Sharing cancelled.', false);
+        return;
+      }
+      // 'unavailable' falls through to tier 3 below.
+    }
+
+    // Tier 3: last resort. Download the PDF and open a drafted email so
+    // it's one drag-and-drop away from being attached and sent.
+    if(pdfResult){ savePdfBlob(pdfResult.blob, pdfResult.fileName); }
+    openDraftedEmail(to, content.subject, content.body);
+    await bumpCounterIfNeeded();
+    logInvoice();
+    setStatus(pdfResult
+      ? 'Downloaded the PDF and opened a drafted email — attach the PDF and send.'
+      : "Opened a drafted email — automatic sending and file sharing aren't available here.", false);
   }
 
   /* ---------- Form actions ---------- */
