@@ -769,12 +769,10 @@
     if(!window.jspdf || !window.html2canvas) return null;
     var node = $('invoicePreview');
     await waitForImages(node);
-    // letterRendering (tried previously) has a known bug where space
-    // characters can collapse to zero width, running words together —
-    // and weaker support for SVG content like the TV badge. foreignObjectRendering
-    // instead has the browser draw the real DOM natively via SVG <foreignObject>,
-    // which avoids both problems since it's not re-measuring text or shapes itself.
-    var canvas = await window.html2canvas(node, { scale: 2, backgroundColor: '#ffffff', foreignObjectRendering: true });
+    // Both letterRendering (collapsed spaces) and foreignObjectRendering
+    // (produced a blank page) turned out worse than plain default rendering,
+    // so back to no special options while this gets diagnosed properly.
+    var canvas = await window.html2canvas(node, { scale: 2, backgroundColor: '#ffffff' });
     var imgData = canvas.toDataURL('image/png');
     var jsPDF = window.jspdf.jsPDF;
     var pdf = new jsPDF({ unit: 'mm', format: 'a4' });
