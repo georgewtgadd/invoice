@@ -752,56 +752,384 @@
     return null;
   }
 
-  function waitForImages(container){
-    var imgs = Array.prototype.slice.call(container.querySelectorAll('img'));
-    var promises = imgs.map(function(img){
-      if(img.complete && img.naturalWidth > 0){ return Promise.resolve(); }
-      return new Promise(function(resolve){
-        img.addEventListener('load', resolve, { once: true });
-        img.addEventListener('error', resolve, { once: true });
-      });
+  /* ---------- PDF export (native vector text/shapes — no screenshot step) ---------- */
+  var logoImageCache = null;
+  function loadLogoImage(){
+    if(logoImageCache) return logoImageCache;
+    logoImageCache = new Promise(function(resolve){
+      var img = new Image();
+      img.onload = function(){ resolve(img); };
+      img.onerror = function(){ resolve(null); };
+      img.src = 'assets/george-gadd-logo.png';
     });
-    return Promise.all(promises);
+    return logoImageCache;
   }
 
-  /* ---------- PDF export ---------- */
-  async function generatePdfBlob(){
-    if(!window.jspdf || !window.html2canvas) return null;
-    var node = $('invoicePreview');
-    await waitForImages(node);
-    // Both letterRendering (collapsed spaces) and foreignObjectRendering
-    // (produced a blank page) turned out worse than plain default rendering,
-    // so back to no special options while this gets diagnosed properly.
-    var canvas = await window.html2canvas(node, { scale: 2, backgroundColor: '#ffffff' });
-    var imgData = canvas.toDataURL('image/png');
-    var jsPDF = window.jspdf.jsPDF;
-    var pdf = new jsPDF({ unit: 'mm', format: 'a4' });
-    var pageWidth = 210, pageHeight = 297;
-    var imgWidth = pageWidth;
-    var imgHeight = canvas.height * (imgWidth / canvas.width);
+  function spacedCaps(text){
+    return String(text == null ? '' : text).toUpperCase().split('').join(' ');
+  }
 
-    if(imgHeight <= pageHeight){
-      // Invoice content is shorter than a full A4 page — centre it
-      // vertically instead of pinning it to the top with all the
-      // leftover space dumped at the bottom.
-      var yOffset = (pageHeight - imgHeight) / 2;
-      pdf.addImage(imgData, 'PNG', 0, yOffset, imgWidth, imgHeight);
+  function pdfWrapLines(doc, linesArray, maxWidth){
+    var out = [];
+    linesArray.forEach(function(line){
+      doc.splitTextToSize(line, maxWidth).forEach(function(w){ out.push(w); });
+    });
+    return out;
+  }
+
+  // Small retro TV icon drawn as native shapes (antenna, body, screen, dials) —
+  // avoids embedding SVG, which had weak support in the old screenshot pipeline.
+  function drawTvBadge(doc, x, y, w){
+    var scale = w / 120;
+    var CORAL = [239,83,53], NAVY = [19,26,46], CREAM = [253,252,249], MUSTARD = [246,185,59];
+
+    doc.setDrawColor(CORAL[0],CORAL[1],CORAL[2]);
+    doc.setLineWidth(1.1*scale);
+    doc.line(x+42*scale, y+20*scale, x+26*scale, y+4*scale);
+    doc.line(x+78*scale, y+20*scale, x+94*scale, y+4*scale);
+
+    doc.setFillColor(CORAL[0],CORAL[1],CORAL[2]);
+    doc.setDrawColor(CREAM[0],CREAM[1],CREAM[2]);
+    doc.setLineWidth(0.8*scale);
+    doc.roundedRect(x+8*scale, y+20*scale, 104*scale, 76*scale, 3.2*scale, 3.2*scale, 'FD');
+
+    doc.setFillColor(NAVY[0],NAVY[1],NAVY[2]);
+    doc.roundedRect(x+20*scale, y+32*scale, 66*scale, 50*scale, 1.6*scale, 1.6*scale, 'F');
+
+    doc.setFillColor(CREAM[0],CREAM[1],CREAM[2]);
+    doc.circle(x+98*scale, y+48*scale, 6*scale, 'F');
+    doc.circle(x+98*scale, y+68*scale, 6*scale, 'F');
+
+    doc.setFont('helvetica','bold');
+    doc.setTextColor(MUSTARD[0],MUSTARD[1],MUSTARD[2]);
+    doc.setFontSize(13*scale*2.83);
+    doc.text('GIG', x+53*scale, y+53*scale, { align:'center' });
+    doc.setFontSize(10*scale*2.83);
+    doc.text('INVOICE', x+53*scale, y+70*scale, { align:'center' });
+  }
+
+  // Draws the full George Gadd invoice starting at startY, returns the final
+  // y reached. buildGaddPdf() below calls this twice — once on a throwaway
+  // doc to measure content height, once for real at a centred startY.
+  function drawGaddPdf(doc, s, inv, totals, logoImg, startY){
+    var INK = [26,26,26], MUTED = [74,68,56], RED = [161,31,38], PAPER = [244,239,228];
+    var pageW = 210, marginX = 24, contentW = pageW - marginX*2, rightEdge = pageW - marginX;
+    var roleText = ROLE_TEXT[inv.role || 'music'];
+
+    doc.setFillColor(PAPER[0],PAPER[1],PAPER[2]);
+    doc.rect(0,0,210,297,'F');
+
+    var logoW = 70, logoH = logoW * 233/1963, logoY = startY;
+    if(logoImg){
+      doc.addImage(logoImg, 'PNG', marginX, logoY, logoW, logoH, undefined, 'FAST');
     } else {
-      var heightLeft = imgHeight;
-      var position = 0;
-      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
-      while(heightLeft > 0){
-        position = heightLeft - imgHeight;
-        pdf.addPage();
-        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-        heightLeft -= pageHeight;
-      }
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(22);
+      doc.setTextColor(INK[0],INK[1],INK[2]);
+      doc.text((s.businessName||'George Gadd').toUpperCase(), marginX, logoY + 10);
+      logoH = 10;
     }
 
-    var nameSlug = (state.invoice.clientName || 'client').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    var fileName = 'Invoice-' + state.invoice.invoiceNumber + '-' + nameSlug + '.pdf';
-    return { blob: pdf.output('blob'), fileName: fileName };
+    doc.setFont('courier','bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(INK[0],INK[1],INK[2]);
+    var taglineY = logoY + logoH + 7;
+    doc.text(spacedCaps(roleText ? roleText.tagline : ''), marginX, taglineY);
+
+    var boxW = 40, boxH = 26, boxX = rightEdge - boxW, boxY = startY - 2;
+    doc.setDrawColor(RED[0],RED[1],RED[2]);
+    doc.setLineWidth(0.45);
+    doc.roundedRect(boxX, boxY, boxW, boxH, 1.8, 1.8, 'S');
+    doc.setLineWidth(0.25);
+    doc.roundedRect(boxX+1.4, boxY+1.4, boxW-2.8, boxH-2.8, 1.2, 1.2, 'S');
+    doc.setFont('courier','bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(RED[0],RED[1],RED[2]);
+    doc.text('INVOICE', boxX + boxW/2, boxY + 8.5, { align: 'center' });
+    doc.setFontSize(10.5);
+    doc.text(inv.invoiceNumber, boxX + boxW/2, boxY + 15.5, { align: 'center' });
+    doc.setFont('courier','normal');
+    doc.setFontSize(7.5);
+    doc.text(formatDate(inv.date), boxX + boxW/2, boxY + 21, { align: 'center' });
+
+    var ruleY = Math.max(taglineY, boxY+boxH) + 12;
+    doc.setDrawColor(INK[0],INK[1],INK[2]);
+    doc.setLineWidth(0.2);
+    doc.setLineDashPattern([0.8,0.8], 0);
+    doc.line(marginX, ruleY, rightEdge, ruleY);
+    doc.setLineDashPattern([], 0);
+
+    var colGap = 12, colW = (contentW - colGap)/2;
+    var col1X = marginX, col2X = marginX + colW + colGap;
+    var partyTopY = ruleY + 14;
+
+    doc.setFont('courier','bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(MUTED[0],MUTED[1],MUTED[2]);
+    doc.text('FROM', col1X, partyTopY);
+    doc.text('BILL TO', col2X, partyTopY);
+
+    var fromLinesRaw = (s.address||'').split('\n').filter(Boolean);
+    if(s.email) fromLinesRaw.push(s.email);
+    if(s.phone) fromLinesRaw.push(s.phone);
+    var billLinesRaw = [inv.clientName || 'Client name'];
+    billLinesRaw = billLinesRaw.concat((inv.clientAddress||'Client address').split('\n').filter(Boolean));
+    if(inv.clientEmail) billLinesRaw.push(inv.clientEmail);
+
+    doc.setFont('courier','normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(INK[0],INK[1],INK[2]);
+    var fromLines = pdfWrapLines(doc, fromLinesRaw, colW);
+    var billLines = pdfWrapLines(doc, billLinesRaw, colW);
+
+    var lineH = 6, textStartY = partyTopY + 6.5;
+    fromLines.forEach(function(line, i){ doc.text(line, col1X, textStartY + i*lineH); });
+    billLines.forEach(function(line, i){ doc.text(line, col2X, textStartY + i*lineH); });
+
+    var maxPartyLines = Math.max(fromLines.length, billLines.length, 1);
+    var tableY = textStartY + maxPartyLines*lineH + 12;
+
+    doc.setFont('courier','bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(MUTED[0],MUTED[1],MUTED[2]);
+    doc.text('DESCRIPTION', col1X, tableY);
+    doc.text('AMOUNT', rightEdge, tableY, { align: 'right' });
+    doc.setDrawColor(MUTED[0],MUTED[1],MUTED[2]);
+    doc.setLineWidth(0.2);
+    doc.setLineDashPattern([0.8,0.8], 0);
+    doc.line(marginX, tableY+2.6, rightEdge, tableY+2.6);
+    doc.setLineDashPattern([], 0);
+
+    var rowY = tableY + 11;
+    function tableRow(label, amountText, opts){
+      opts = opts || {};
+      doc.setFont('courier', opts.italic ? 'italic' : 'normal');
+      doc.setFontSize(9.5);
+      var col = opts.color || INK;
+      doc.setTextColor(col[0],col[1],col[2]);
+      var wrapped = doc.splitTextToSize(label, contentW - 45);
+      wrapped.forEach(function(w, i){ doc.text(w, col1X, rowY + i*4.8); });
+      doc.text(amountText, rightEdge, rowY, { align: 'right' });
+      var dividerY = rowY + (wrapped.length-1)*4.8 + 3.4;
+      doc.setDrawColor(220,213,196);
+      doc.setLineWidth(0.15);
+      doc.setLineDashPattern([0.8,0.8], 0);
+      doc.line(marginX, dividerY, rightEdge, dividerY);
+      doc.setLineDashPattern([], 0);
+      rowY = dividerY + 7.2;
+    }
+
+    tableRow(inv.description || (roleText ? roleText.description : 'Live performance fee'), formatAmount(totals.gross, s.currency));
+    (totals.additionLines||[]).forEach(function(l){ tableRow(l.label, '+' + formatAmount(l.amount, s.currency)); });
+    (totals.deductionLines||[]).forEach(function(l){ tableRow('Less: ' + l.label, '-' + formatAmount(l.amount, s.currency), { italic: true, color: MUTED }); });
+
+    doc.setDrawColor(INK[0],INK[1],INK[2]);
+    doc.setLineWidth(0.5);
+    doc.line(marginX, rowY, rightEdge, rowY);
+    rowY += 9;
+    doc.setFont('courier','bold');
+    doc.setFontSize(11);
+    doc.setTextColor(RED[0],RED[1],RED[2]);
+    doc.text('Total due', col1X, rowY);
+    doc.text(formatAmount(totals.net, s.currency), rightEdge, rowY, { align: 'right' });
+
+    var footY = rowY + 20;
+    doc.setFont('courier','normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(MUTED[0],MUTED[1],MUTED[2]);
+    var terms = doc.splitTextToSize(s.paymentTerms || 'Payment due within 14 days of the invoice date.', contentW);
+    terms.forEach(function(line,i){ doc.text(line, col1X, footY + i*4.8); });
+    footY += terms.length*4.8 + 4;
+
+    var bankParts = [];
+    if(s.accountName) bankParts.push(s.accountName);
+    if(s.sortCode) bankParts.push('Sort code ' + s.sortCode);
+    if(s.accountNumber) bankParts.push('Account ' + s.accountNumber);
+    if(s.bankName) bankParts.push(s.bankName);
+    var bankLine = doc.splitTextToSize(bankParts.join('  |  ') || 'Add your payment details in Settings', contentW);
+    bankLine.forEach(function(line,i){ doc.text(line, col1X, footY + i*4.8); });
+    footY += bankLine.length*4.8 + 8;
+
+    doc.setFont('helvetica','italic');
+    doc.setFontSize(10);
+    doc.setTextColor(INK[0],INK[1],INK[2]);
+    doc.text((roleText ? roleText.signoff : 'Thanks for having me!'), col1X, footY);
+
+    return footY;
+  }
+
+  function buildGaddPdf(s, inv, totals, logoImg){
+    var jsPDF = window.jspdf.jsPDF;
+    var defaultTop = 26, pageH = 297;
+    var dryDoc = new jsPDF({ unit:'mm', format:'a4' });
+    var contentBottom = drawGaddPdf(dryDoc, s, inv, totals, logoImg, defaultTop);
+    var centeredTop = Math.max(20, (pageH - (contentBottom - defaultTop)) / 2);
+    var doc = new jsPDF({ unit:'mm', format:'a4' });
+    drawGaddPdf(doc, s, inv, totals, logoImg, centeredTop);
+    return doc;
+  }
+
+  function drawTvPartyPdf(doc, s, inv, totals, startY){
+    var NAVY = [19,26,46], MUSTARD = [246,185,59], CORAL = [239,83,53], CORALDARK = [194,60,31];
+    var SLATE = [91,96,112], MUTEDBODY = [74,80,100], PAPER = [253,252,249];
+    var pageW = 210, marginX = 24, contentW = pageW - marginX*2, rightEdge = pageW - marginX;
+
+    doc.setFillColor(PAPER[0],PAPER[1],PAPER[2]);
+    doc.rect(0,0,210,297,'F');
+
+    var bandH = startY + 34;
+    doc.setFillColor(NAVY[0],NAVY[1],NAVY[2]);
+    doc.rect(0, 0, 210, bandH, 'F');
+
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(22);
+    doc.setTextColor(MUSTARD[0],MUSTARD[1],MUSTARD[2]);
+    doc.text((s.businessName||'TV Party Tonight!').toUpperCase(), marginX, startY + 10);
+
+    doc.setFontSize(9);
+    doc.setTextColor(CORAL[0],CORAL[1],CORAL[2]);
+    doc.text(spacedCaps(s.tagline || 'TV Theme Party Band'), marginX, startY + 18);
+
+    drawTvBadge(doc, rightEdge - 32, startY - 6, 32);
+
+    var ticketY = bandH + 12;
+    doc.setFont('courier','normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(NAVY[0],NAVY[1],NAVY[2]);
+    doc.setDrawColor(CORAL[0],CORAL[1],CORAL[2]);
+    doc.setLineWidth(0.35);
+    doc.setLineDashPattern([0.8,0.8], 0);
+    doc.line(rightEdge-46, ticketY-4, rightEdge-46, ticketY+6);
+    doc.setLineDashPattern([], 0);
+    doc.text(inv.invoiceNumber, rightEdge, ticketY, { align:'right' });
+    doc.text(formatDate(inv.date), rightEdge, ticketY+6, { align:'right' });
+
+    var colGap = 12, colW = (contentW - colGap)/2;
+    var col1X = marginX, col2X = marginX + colW + colGap;
+    var partyTopY = ticketY + 18;
+
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(SLATE[0],SLATE[1],SLATE[2]);
+    doc.text('FROM', col1X, partyTopY);
+    doc.text('BILL TO', col2X, partyTopY);
+
+    var fromLinesRaw = (s.address||'').split('\n').filter(Boolean);
+    if(s.email) fromLinesRaw.push(s.email);
+    if(s.phone) fromLinesRaw.push(s.phone);
+    var billLinesRaw = [inv.clientName || 'Client / venue name'];
+    billLinesRaw = billLinesRaw.concat((inv.clientAddress||'Client address').split('\n').filter(Boolean));
+    if(inv.clientEmail) billLinesRaw.push(inv.clientEmail);
+
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(10);
+    doc.setTextColor(NAVY[0],NAVY[1],NAVY[2]);
+    var fromLines = pdfWrapLines(doc, fromLinesRaw, colW);
+    var billLines = pdfWrapLines(doc, billLinesRaw, colW);
+    var lineH = 6, textStartY = partyTopY + 6.5;
+    fromLines.forEach(function(line,i){ doc.text(line, col1X, textStartY + i*lineH); });
+    billLines.forEach(function(line,i){ doc.text(line, col2X, textStartY + i*lineH); });
+    var maxPartyLines = Math.max(fromLines.length, billLines.length, 1);
+    var tableY = textStartY + maxPartyLines*lineH + 12;
+
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(SLATE[0],SLATE[1],SLATE[2]);
+    doc.text('DESCRIPTION', col1X, tableY);
+    doc.text('AMOUNT', rightEdge, tableY, { align:'right' });
+    doc.setDrawColor(NAVY[0],NAVY[1],NAVY[2]);
+    doc.setLineWidth(0.5);
+    doc.line(marginX, tableY+2.8, rightEdge, tableY+2.8);
+
+    var rowY = tableY + 11.5;
+    function tableRow(label, amountText, opts){
+      opts = opts || {};
+      doc.setFont('helvetica', opts.italic ? 'italic' : 'normal');
+      doc.setFontSize(10.5);
+      var col = opts.color || NAVY;
+      doc.setTextColor(col[0],col[1],col[2]);
+      var wrapped = doc.splitTextToSize(label, contentW - 45);
+      wrapped.forEach(function(w,i){ doc.text(w, col1X, rowY + i*5); });
+      doc.text(amountText, rightEdge, rowY, { align:'right' });
+      var dividerY = rowY + (wrapped.length-1)*5 + 3.6;
+      doc.setDrawColor(228,226,218);
+      doc.setLineWidth(0.2);
+      doc.line(marginX, dividerY, rightEdge, dividerY);
+      rowY = dividerY + 7.5;
+    }
+    tableRow(inv.description || 'Live performance fee', formatAmount(totals.gross, s.currency));
+    (totals.additionLines||[]).forEach(function(l){ tableRow(l.label, '+' + formatAmount(l.amount, s.currency)); });
+    (totals.deductionLines||[]).forEach(function(l){ tableRow('Less: ' + l.label, '-' + formatAmount(l.amount, s.currency), { italic:true, color: MUTEDBODY }); });
+
+    var barH = 14;
+    doc.setFillColor(MUSTARD[0],MUSTARD[1],MUSTARD[2]);
+    doc.roundedRect(marginX, rowY, contentW, barH, 1.6, 1.6, 'F');
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(12);
+    doc.setTextColor(NAVY[0],NAVY[1],NAVY[2]);
+    doc.text('Total due', marginX + 6, rowY + barH/2 + 3.2);
+    doc.text(formatAmount(totals.net, s.currency), rightEdge - 6, rowY + barH/2 + 3.2, { align:'right' });
+    rowY += barH + 16;
+
+    doc.setDrawColor(207,208,200);
+    doc.setLineWidth(0.4);
+    doc.setLineDashPattern([1,1], 0);
+    doc.line(marginX, rowY, rightEdge, rowY);
+    doc.setLineDashPattern([], 0);
+    rowY += 8;
+
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(9);
+    doc.setTextColor(MUTEDBODY[0],MUTEDBODY[1],MUTEDBODY[2]);
+    var terms = doc.splitTextToSize(s.paymentTerms || 'Payment due within 14 days of the invoice date.', contentW);
+    terms.forEach(function(line,i){ doc.text(line, col1X, rowY + i*4.8); });
+    rowY += terms.length*4.8 + 4;
+
+    var bankParts = [];
+    if(s.accountName) bankParts.push(s.accountName);
+    if(s.sortCode) bankParts.push('Sort code ' + s.sortCode);
+    if(s.accountNumber) bankParts.push('Account ' + s.accountNumber);
+    if(s.bankName) bankParts.push(s.bankName);
+    doc.setFont('helvetica','bold');
+    doc.setTextColor(NAVY[0],NAVY[1],NAVY[2]);
+    var bankLine = doc.splitTextToSize(bankParts.join('  |  ') || 'Add your payment details in Settings', contentW);
+    bankLine.forEach(function(line,i){ doc.text(line, col1X, rowY + i*4.8); });
+    rowY += bankLine.length*4.8 + 8;
+
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(CORALDARK[0],CORALDARK[1],CORALDARK[2]);
+    doc.text('Thanks for having us play — see you at the next one!', col1X, rowY);
+
+    return rowY;
+  }
+
+  function buildTvPartyPdf(s, inv, totals){
+    var jsPDF = window.jspdf.jsPDF;
+    var defaultTop = 20, pageH = 297;
+    var dryDoc = new jsPDF({ unit:'mm', format:'a4' });
+    var contentBottom = drawTvPartyPdf(dryDoc, s, inv, totals, defaultTop);
+    var centeredTop = Math.max(16, (pageH - (contentBottom - defaultTop)) / 2);
+    var doc = new jsPDF({ unit:'mm', format:'a4' });
+    drawTvPartyPdf(doc, s, inv, totals, centeredTop);
+    return doc;
+  }
+
+  async function generatePdfBlob(){
+    if(!window.jspdf) return null;
+    var s = state.settings[state.persona];
+    var inv = state.invoice;
+    var totals = calcTotals(inv);
+    var doc;
+    if(state.persona === 'gadd'){
+      var logoImg = await loadLogoImage();
+      doc = buildGaddPdf(s, inv, totals, logoImg);
+    } else {
+      doc = buildTvPartyPdf(s, inv, totals);
+    }
+    var nameSlug = (inv.clientName || 'client').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    var fileName = 'Invoice-' + inv.invoiceNumber + '-' + nameSlug + '.pdf';
+    return { blob: doc.output('blob'), fileName: fileName };
   }
 
   function savePdfBlob(blob, fileName){
@@ -829,7 +1157,7 @@
     renderPreview();
     if(err){ setStatus(err, false); return; }
 
-    if(!window.jspdf || !window.html2canvas){
+    if(!window.jspdf){
       setStatus('PDF library failed to load — check your connection and try again.', false);
       return;
     }
